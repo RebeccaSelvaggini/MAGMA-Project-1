@@ -1,0 +1,439 @@
+R<x> := PolynomialRing(GF(2));
+
+//da stringa esadecimale a sequenza binaria e viceversa
+function HexToBin(s)
+    if s eq "" then
+        return [];
+    else 
+        return Reverse(Intseq(StringToInteger(s,16),2,4*(#s)));
+    end if;
+end function;
+
+function BinToHex(s)
+    l:=(#s div 4) - 1;
+    if s eq [] then
+        return "";
+    else
+        return &cat [IntegerToString(Seqint(ChangeUniverse(Reverse(s[4*k+1..4*k+4]),Integers()),2),16) : k in [0..l]];
+    end if;
+end function; 
+
+//LFSR 
+function Counter(i)
+    p := x^7+x^6+1;
+    L := [GF(2)!1,1,1,0,1,0,1];
+    for j in [1..i] do
+        L := LFSRStep(p,L);
+    end for;
+    return L;
+end function;
+
+//S box layer
+function sBoxLayer(X)
+    X := Partition(X,4);
+    S := [[GF(2)!1,1,1,0],[GF(2)!1,1,0,1],[GF(2)!1,0,1,1],[GF(2)!0,0,0,0],[GF(2)!0,0,1,0],[GF(2)!0,0,0,1],[GF(2)!0,1,0,0],[GF(2)!1,1,1,1],[GF(2)!0,1,1,1],[GF(2)!1,0,1,0],[GF(2)!1,0,0,0],[GF(2)!0,1,0,1],[GF(2)!1,0,0,1],[GF(2)!1,1,0,0],[GF(2)!0,0,1,1],[GF(2)!0,1,1,0]];
+    for i in [1..#X] do
+        X[i] := S[Seqint(ChangeUniverse(Reverse(X[i]),Integers()),2)+1];
+    end for;
+    return &cat X;
+end function;
+
+//P layer
+function pLayer(X)
+    Y := [];
+    for j in [0..(#X-2)] do
+        Y[((40*j) mod 159)+1] := X[j+1];
+    end for;
+    Append(~Y,X[#X]);
+    return Y;
+end function;
+
+//XOR di sequenze binarie
+function XOR(a,b)
+    return [a[i]+b[i] : i in [1..#a]];
+end function;
+
+//X è una sequenza da 160 bit
+function P(X)
+    for i in [1..80] do
+        C := [0] cat Counter(i-1) cat [0 : i in [1..152]];
+        D := Reverse(C);
+        X := XOR(X,XOR(C,D));
+        X := sBoxLayer(X);
+        X := Partition(X,8);
+        X := &cat Reverse(X);
+        X := pLayer(X);
+        X := Partition(X,8);
+        X := &cat Reverse(X);
+    end for;
+    return X;
+end function;
+
+//phi1,phi2
+function phi1(X)
+    X := Partition(X,8);
+    X[1] := Rotate(X[1], -3);
+    X[1][1] := GF(2)!(X[1][1] + X[4][8]);
+    X[1][8] := GF(2)!(X[1][8] + X[14][1]);
+    X := Rotate(X,-1);
+    return &cat X;
+end function;
+
+function phi2(X)
+    Y := phi1(X);
+    X := XOR(X,Y);
+    return X;
+end function;
+
+//mask
+function mask(K,a,b)
+    n := 160;
+    K := P((K cat [0 : i in [1..n-#K]]));
+    for i in [1..a] do
+        K := phi1(K);
+    end for;
+    for i in [1..b] do
+        K := phi2(K);
+    end for;
+    return K;
+end function;
+
+//K,N,A,M sono esadecimali
+function Dumbo(K,N,A,M)
+    t := 64;
+    n := 160;
+    HexM := M;
+    M := ChangeUniverse(HexToBin(M),GF(2));
+    N := ChangeUniverse(HexToBin(N),GF(2));
+    A := ChangeUniverse(HexToBin(A),GF(2));
+    K := ChangeUniverse(HexToBin(K),GF(2));
+    m := #N;
+    lM := #M;
+
+    if IsDivisibleBy(lM,n) eq false then
+        M := M cat [0 : i in [1..n-(lM mod n)]];
+    end if;
+    if M ne [] then
+        M := Partition(M,n);
+    end if;
+    C := [];
+    for i in [1..#M] do
+        S1 := N cat [GF(2)!0 : j in [1..n-m]];
+        S2 := mask(K,(i-1),1);
+        S3 := P(XOR(S1,S2));
+        C[i] := XOR(M[i],XOR(S2,S3));
+    end for;
+    C := &cat C;
+    if C ne [] then
+        Cipher := C[1..lM];
+    else 
+        Cipher := C;
+    end if;
+    
+    S1 := N cat A cat [0,0,0,0,0,0,0,1];
+    if IsDivisibleBy(#S1,n) eq false then
+        S1 := S1 cat [0 : i in [1..n-(#S1 mod n)]];
+    end if;
+    A := Partition(S1,n);
+
+    C := Cipher cat [0,0,0,0,0,0,0,1];
+    if IsDivisibleBy(#C,n) eq false then
+        C := C cat [0 : i in [1..n-(#C mod n)]];
+    end if;
+    C := Partition(C,n);
+
+    T := A[1];
+    for i in [2..#A] do
+        S1 := mask(K,(i-1),0);
+        S2 := P(XOR(A[i],S1));
+        T := XOR(XOR(T,S2),S1);
+    end for;
+    for i in [1..#C] do
+        S1 := mask(K,(i-1),2);
+        S2 := P(XOR(C[i],S1));
+        T := XOR(T,XOR(S2,S1));
+    end for;
+
+    S1 := mask(K,0,0);
+    S2 := P(XOR(T,S1));
+    T := XOR(S2,S1);
+
+    if HexM eq "" then
+        Cipher := "";
+    else
+        Cipher := BinToHex(Cipher);
+    end if;
+    return Cipher,BinToHex(T[1..t]);
+end function;
+
+function DumboDec(K,N,C,A,T)
+    t := 64;
+    n := 160;
+    HexC := C;
+    C := ChangeUniverse(HexToBin(C),GF(2));
+    N := ChangeUniverse(HexToBin(N),GF(2));
+    A := ChangeUniverse(HexToBin(A),GF(2));
+    K := ChangeUniverse(HexToBin(K),GF(2));
+    T := ChangeUniverse(HexToBin(T),GF(2));
+    m := #N;
+    lC := #C;
+    Cipher := C;
+
+    if IsDivisibleBy(lC,n) eq false then
+        C := C cat [0 : i in [1..n-(lC mod n)]];
+    end if;
+    if C ne [] then
+        C := Partition(C,n);
+    end if;
+    M := [];
+    for i in [1..#C] do
+        S1 := N cat [GF(2)!0 : j in [1..n-m]];
+        S2 := mask(K,(i-1),1);
+        S3 := P(XOR(S1,S2));
+        M[i] := XOR(C[i],XOR(S2,S3));
+    end for;
+    M := &cat M;
+    Plain := M[1..lC];
+
+    S1 := N cat A cat [0,0,0,0,0,0,0,1];
+    if IsDivisibleBy(#S1,n) eq false then
+        S1 := S1 cat [0 : i in [1..n-(#S1 mod n)]];
+    end if;
+    A := Partition(S1,n);
+
+    C := Cipher cat [0,0,0,0,0,0,0,1];
+    if IsDivisibleBy(#C,n) eq false then
+        C := C cat [0 : i in [1..n-(#C mod n)]];
+    end if;
+    C := Partition(C,n);
+    
+    bT := A[1];
+    for i in [2..#A] do
+        S1 := mask(K,i-1,0);
+        S2 := P(XOR(A[i],S1));
+        bT := XOR(bT,XOR(S2,S1));
+    end for;
+    for i in [1..#C] do
+        S1 := mask(K,i-1,2);
+        S2 := P(XOR(C[i],S1));
+        bT := XOR(bT,XOR(S2,S1));
+    end for;
+    S1 := mask(K,0,0);
+    S2 := P(XOR(bT,S1));
+    bT := XOR(S2,S1);
+    bT := bT[1..t];
+    if bT eq T then
+        return BinToHex(Plain);
+    else 
+        return "Wrong Tag";
+    end if;
+end function;
+
+//Jumbo
+
+//LFSR
+function CounterJ(i)
+    p := x^7+x^6+1;
+    L := [GF(2)!1,0,0,0,1,0,1];
+    for j in [1..(i)] do
+        L := LFSRStep(p,L);
+    end for;
+    return L;
+end function;
+
+//S box layer identico a quello per Dumbo
+
+//P layer
+function pLayerJ(X)
+    Y := [];
+    for j in [0..(#X-2)] do
+        Y[((44*j) mod 175)+1] := X[j+1];
+    end for;
+    Append(~Y,X[#X]);
+    return Y;
+end function;
+
+//X è una sequenza da 176 bit
+function PJ(X)
+    for i in [1..90] do
+        C := [0] cat CounterJ(i-1) cat [0 : j in [1..168]] ;
+        D := Reverse(C);
+        X := XOR(X,XOR(C,D));
+        X := sBoxLayer(X);
+        X := Partition(X,8);
+        X := Reverse(X);
+        X := &cat X;
+        X := pLayerJ(X);
+        X := Partition(X,8);
+        X:= &cat Reverse(X);
+    end for;
+    return X;
+end function;
+
+
+//X è una sequenza di 176 bit
+function phi1J (X)
+    X := Partition(X, 8);
+    X[1] := Rotate(X[1], -1);
+    X[1][1] := GF(2)!(X[1][1] + X[4][8]);
+    X[1][8] := GF(2)!(X[1][8] + X[20][1]);
+    X := Rotate(X, -1);
+    X := &cat X;
+    return X;
+end function;
+
+function phi2J (X)
+    Y := phi1J(X);
+    X := XOR(X,Y);
+    return X;
+end function;
+
+function maskJ(K,a,b)
+    n := 176;
+    B := PJ(K cat [0 : i in {1..(n-#K)}]);
+    for i in {1..a} do
+        B := phi1J(B);
+    end for;
+    for i in {1..b} do
+        B:=phi2J(B);
+    end for;    
+    return B;
+end function;
+
+
+//K,N,A,M sono esadecimali
+function Jumbo(K,N,A,M)
+    t := 64;
+    n := 176;
+    HexM := M;
+    M := HexToBin(M);
+    N := HexToBin(N);
+    A := HexToBin(A);
+    K := HexToBin(K);
+    m := #N;
+    lM := #M;
+
+    if IsDivisibleBy(lM,n) eq false then
+        M := M cat [0 : i in [1..n-(lM mod n)]];
+    end if;
+    if M ne [] then
+        M := Partition(M,n);
+    end if;
+
+    C := [];
+    for i in [1..#M] do
+        S1 := N cat [GF(2)!0 : j in [1..n-m]];
+        S2 := maskJ(K,(i-1),1);
+        S3 := PJ(XOR(S1,S2));
+        C[i] := XOR(M[i],XOR(S3,S2));
+    end for;
+    C := &cat C;
+    if C ne [] then
+        Cipher := C[1..lM];
+    else 
+        Cipher := C;
+    end if;
+
+    C := Cipher cat [GF(2)!0,0,0,0,0,0,0,1];
+    if IsDivisibleBy(#C,n) eq false then
+        C := C cat [GF(2)!0 : i in [1..n-(#C mod n)]];
+    end if;
+    C := Partition(C,n);
+    S1 := N cat A cat [GF(2)!0,0,0,0,0,0,0,1];
+    if IsDivisibleBy(#S1,n) eq false then
+        S1 := S1 cat [GF(2)!0 : i in [1..n-(#S1 mod n)]];
+    end if;
+    A := Partition(S1,n);
+    lA := #A;
+    T := A[1];
+    for i in [2..lA] do
+        S1 := maskJ(K,i-1,0);
+        S2 := PJ(XOR(A[i],S1));
+        T := XOR(T,XOR(S2,S1));
+    end for;
+    for i in [1..#C] do
+        S1 := maskJ(K,i-1,2);
+        S2 := PJ(XOR(C[i],S1));
+        T := XOR(T,XOR(S2,S1));;
+    end for;
+    S1 := maskJ(K,0,0);
+    S2 := PJ(XOR(T,S1));
+    T := XOR(S2,S1);
+
+    if HexM eq "" then
+        Cipher := "";
+    else
+        Cipher := BinToHex(Cipher);
+    end if;
+    return Cipher, BinToHex(T[1..t]);
+end function;
+
+
+
+
+function JumboDec(K,N,C,A,T)
+    n := 176;
+    K := HexToBin(K);
+    N := HexToBin(N);
+    C := HexToBin(C);
+    A := HexToBin(A);
+    T := HexToBin(T);
+    lM := #C;
+    m := #N;
+    t := 64;
+
+    Cipher := C;
+    if IsDivisibleBy(#C,n) eq false then
+        C := C cat [0 : i in [1..n-(#C mod n)]];
+    end if;
+    if C ne [] then
+        C := Partition(C,n);
+    end if;
+
+    M := [];
+    for i in {1..#C} do
+        S1 := N cat [GF(2)!0 : j in [1..n-m]];
+        S2 := maskJ(K,(i-1),1);
+        S3 := PJ(XOR(S1,S2));
+        M[i] := XOR(C[i],XOR(S3,S2));
+    end for;
+    M := &cat M;
+    Message := M[1..lM];
+
+    C := Cipher cat [GF(2)!0,0,0,0,0,0,0,1];
+    if IsDivisibleBy(#C,n) eq false then
+        C := C cat [GF(2)!0 : i in [1..n-(#C mod n)]];
+    end if;
+    C := Partition(C,n);
+
+    S1 := N cat A cat [GF(2)!0,0,0,0,0,0,0,1];
+    if IsDivisibleBy(#S1,n) eq false then
+        S1 := S1 cat [GF(2)!0 : i in [1..n-(#S1 mod n)]];
+    end if;
+    A := Partition(S1,n);
+    lA := #A;
+    T1 := A[1];
+
+    for i in [1..#C] do
+        S1 := maskJ(K,i-1,2); 
+        S2 := PJ(XOR(C[i],S1));
+        T1 := XOR(T1,XOR(S1,S2));
+    end for;
+    
+    for i in [2..lA] do
+        S1 := maskJ(K,i-1,0);
+        S2 := PJ(XOR(A[i],S1));
+        T1 := XOR(T1,XOR(S1,S2));
+    end for;
+    
+    S1 := maskJ(K,0,0);
+    S2 := PJ(XOR(T1,S1));
+    T1 := XOR(S1,S2);
+
+    T1 := T1[1..t];
+    if T1 eq T then
+        return BinToHex(Message);
+    else
+        return "Wrong Tag";
+    end if;
+end function;
